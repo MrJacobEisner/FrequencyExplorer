@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Fourier Transform Explorer</title>
+        <style>
+            :root {
+                --bg-color: #f0f0f0;
+                --canvas-bg: #fff;
+                --border-color: #444;
+                --highlight-color: cyan;
+                --font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+                --spacing: 20px;
+            }
+            * {
+                box-sizing: border-box;
+            }
+            body {
+                margin: 0;
+                padding: var(--spacing);
+                font-family: var(--font-family);
+                background: var(--bg-color);
+                color: #333;
+                text-align: center;
+            }
+            h1 {
+                margin-bottom: 0.5em;
+            }
+            .description {
+                margin-top: 0;
+                font-style: italic;
+                color: #555;
+            }
+            .controls-group {
+                margin-bottom: var(--spacing);
+            }
+            .canvas-grid {
+                display: flex;
+                justify-content: center;
+                gap: var(--spacing);
+                margin-bottom: var(--spacing);
+                flex-wrap: wrap;
+            }
+            .canvas-container {
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+            }
+            canvas {
+                border: 1px solid var(--border-color);
+                background: var(--canvas-bg);
+                max-width: 100%;
+                height: auto;
+            }
+            .label {
+                font-weight: bold;
+                margin-bottom: 0.5em;
+            }
+            label,
+            select,
+            input,
+            button {
+                font-size: 1rem;
+                margin: 0 var(--spacing) 0 0;
+            }
+            input[type="range"] {
+                vertical-align: middle;
+                width: 200px;
+            }
+            .hidden {
+                display: none;
+            }
+        </style>
+    </head>
+    <body>
+        <header>
+            <h1>Fourier Transform Explorer</h1>
+        </header>
+
+        <section id="controls" class="controls-group">
+            <input type="file" id="fileInput" accept="image/*" />
+            <button id="fftButton">To Frequency Domain</button>
+            <button id="saveFFTButton">Save Spectrum</button>
+            <div style="margin-top: 10px">
+                <label for="binSelect">Frequency Bins:</label>
+                <select id="binSelect">
+                    <option value="16">16×16</option>
+                    <option value="32">32×32</option>
+                    <option value="64">64×64</option>
+                    <option value="128">128×128</option>
+                    <option value="256">256×256</option>
+                    <option value="512" selected>512×512</option>
+                </select>
+            </div>
+        </section>
+
+        <div class="canvas-grid">
+            <div class="canvas-container">
+                <div class="label">Original Image</div>
+                <canvas id="sourceCanvas" width="512" height="512"></canvas>
+            </div>
+            <div class="canvas-container">
+                <div class="label">Frequency Spectrum</div>
+                <canvas id="forwardFFTCanvas" width="512" height="512"></canvas>
+            </div>
+        </div>
+
+        <section id="inverseControls" class="controls-group">
+            <button id="inverseFFTButton">Back to Image</button>
+            <label
+                ><input type="checkbox" id="editToggle" /> Edit
+                Frequencies</label
+            >
+            <label for="intensitySlider">Intensity:</label>
+            <input
+                type="range"
+                id="intensitySlider"
+                min="0"
+                max="100"
+                step="1"
+                value="100"
+                disabled
+            />
+            <button id="clearSelectionButton" disabled>Clear</button>
+            <p>
+                <i class="description">
+                    To edit frequencies, check the box, then click on pixels in
+                    the Spectrum Input to select them. Use the slider to set
+                    their amplitude.</i
+                >
+            </p>
+        </section>
+
+        <div class="canvas-grid">
+            <div class="canvas-container">
+                <div class="label">Spectrum Input</div>
+                <canvas
+                    id="inverseInputCanvas"
+                    width="512"
+                    height="512"
+                ></canvas>
+            </div>
+            <div class="canvas-container">
+                <div class="label">Reconstructed Image</div>
+                <canvas id="reconCanvas" width="512" height="512"></canvas>
+            </div>
+        </div>
+        <footer>
+            <p><i class="description"> This page is 100% vibe-coded</i></p>
+        </footer>
+
+        <script>
+            (function () {
+                const SIZE = 512;
+                let BIN = 512;
+                let origFreq, modReal, modImag;
+                const selectedBins = [];
+
+                const elements = {
+                    fileInput: "#fileInput",
+                    binSelect: "#binSelect",
+                    fftButton: "#fftButton",
+                    saveButton: "#saveFFTButton",
+                    inverseButton: "#inverseFFTButton",
+                    editToggle: "#editToggle",
+                    intensitySlider: "#intensitySlider",
+                    clearButton: "#clearSelectionButton",
+                    canvases: {
+                        src: "#sourceCanvas",
+                        fwd: "#forwardFFTCanvas",
+                        inv: "#inverseInputCanvas",
+                        rec: "#reconCanvas",
+                    },
+                };
+
+                const ctx = {};
+                for (const [key, sel] of Object.entries(elements.canvases)) {
+                    const canvas = document.querySelector(sel);
+                    ctx[key] = canvas.getContext("2d");
+                    fillWhite(ctx[key]);
+                }
+
+                const el = {};
+                for (const [key, sel] of Object.entries(elements)) {
+                    if (key === "canvases") continue;
+                    el[key] = document.querySelector(sel);
+                }
+
+                el.binSelect.addEventListener(
+                    "change",
+                    () => (BIN = +el.binSelect.value)
+                );
+                el.fileInput.addEventListener("change", (e) =>
+                    loadImage(e.target.files[0])
+                );
+                el.fftButton.addEventListener("click", computeFFT);
+                el.saveButton.addEventListener("click", saveSpectrum);
+                el.editToggle.addEventListener("change", toggleEdit);
+                el.clearButton.addEventListener("click", clearSelection);
+                el.inverseButton.addEventListener("click", () => {
+                    applyIntensity();
+                    reconstruct(false);
+                });
+                el.intensitySlider.addEventListener("input", () => {
+                    applyIntensity();
+                    reconstruct(true);
+                });
+                document
+                    .querySelector(elements.canvases.inv)
+                    .addEventListener("click", selectBin);
+
+                function loadImage(file) {
+                    if (!file) return;
+                    const img = new Image();
+                    img.onload = () => drawGray(img);
+                    img.src = URL.createObjectURL(file);
+                }
+
+                function drawGray(img) {
+                    const s = Math.min(img.width, img.height);
+                    const sx = (img.width - s) / 2;
+                    const sy = (img.height - s) / 2;
+                    const c = ctx.src;
+                    fillWhite(c);
+                    c.drawImage(img, sx, sy, s, s, 0, 0, SIZE, SIZE);
+                    const data = c.getImageData(0, 0, SIZE, SIZE);
+                    for (let i = 0; i < data.data.length; i += 4) {
+                        const gray =
+                            data.data[i] * 0.299 +
+                            data.data[i + 1] * 0.587 +
+                            data.data[i + 2] * 0.114;
+                        data.data[i] =
+                            data.data[i + 1] =
+                            data.data[i + 2] =
+                                gray;
+                    }
+                    c.putImageData(data, 0, 0);
+                }
+
+                function computeFFT() {
+                    const imgData = ctx.src.getImageData(0, 0, SIZE, SIZE);
+                    origFreq = fft2D(imgData, BIN);
+                    modReal = origFreq.real.map((r) => Float64Array.from(r));
+                    modImag = origFreq.imag.map((r) => Float64Array.from(r));
+                    selectedBins.length = 0;
+                    el.intensitySlider.min = 0;
+                    el.intensitySlider.max = BIN * BIN;
+                    el.intensitySlider.value = el.intensitySlider.max;
+                    render(origFreq, ctx.fwd);
+                    render(origFreq, ctx.inv);
+                    ctx.rec.clearRect(0, 0, SIZE, SIZE);
+                }
+
+                function saveSpectrum() {
+                    const link = document.createElement("a");
+                    link.download = "spectrum.png";
+                    link.href = document
+                        .querySelector(elements.canvases.fwd)
+                        .toDataURL();
+                    link.click();
+                }
+
+                function toggleEdit() {
+                    const on = el.editToggle.checked;
+                    el.intensitySlider.disabled = el.clearButton.disabled = !on;
+                    if (!on && origFreq) {
+                        modReal = origFreq.real.map((r) =>
+                            Float64Array.from(r)
+                        );
+                        modImag = origFreq.imag.map((r) =>
+                            Float64Array.from(r)
+                        );
+                        render(origFreq, ctx.inv);
+                    }
+                }
+
+                function clearSelection() {
+                    selectedBins.length = 0;
+                    modReal = origFreq.real.map((r) => Float64Array.from(r));
+                    modImag = origFreq.imag.map((r) => Float64Array.from(r));
+                    el.intensitySlider.value = el.intensitySlider.max;
+                    render(origFreq, ctx.inv);
+                }
+
+                function selectBin(e) {
+                    if (!el.editToggle.checked || !origFreq) return;
+                    const { fx, fy } = toFreq(e.offsetX, e.offsetY);
+                    const key = `${fx},${fy}`;
+                    const idx = selectedBins.findIndex((b) => b.key === key);
+                    if (idx >= 0) selectedBins.splice(idx, 1);
+                    else selectedBins.push({ fx, fy, key });
+                    render(origFreq, ctx.inv);
+                    highlight();
+                }
+
+                function applyIntensity() {
+                    if (!origFreq) return;
+                    modReal = origFreq.real.map((r) => Float64Array.from(r));
+                    modImag = origFreq.imag.map((r) => Float64Array.from(r));
+                    const amp = +el.intensitySlider.value;
+                    selectedBins.forEach(({ fx, fy }) => {
+                        const r0 = origFreq.real[fy][fx];
+                        const i0 = origFreq.imag[fy][fx];
+                        const phase = Math.atan2(i0, r0);
+                        modReal[fy][fx] = Math.cos(phase) * amp;
+                        modImag[fy][fx] = Math.sin(phase) * amp;
+                    });
+                }
+
+                function reconstruct(skipHighlight) {
+                    if (!origFreq) return;
+                    const img = ifft2D({
+                        real: modReal,
+                        imag: modImag,
+                        B: BIN,
+                    });
+                    const tmp = document.createElement("canvas");
+                    tmp.width = tmp.height = BIN;
+                    tmp.getContext("2d").putImageData(img, 0, 0);
+                    fillWhite(ctx.rec);
+                    ctx.rec.drawImage(tmp, 0, 0, SIZE, SIZE);
+                    if (!skipHighlight) highlight();
+                }
+
+                function render({ real, imag, B }, context) {
+                    const tmp = document.createElement("canvas");
+                    tmp.width = tmp.height = B;
+                    const tctx = tmp.getContext("2d");
+                    const image = tctx.createImageData(B, B);
+                    let max = 0;
+                    const mags = new Float64Array(B * B);
+                    for (let y = 0; y < B; y++)
+                        for (let x = 0; x < B; x++) {
+                            const m = Math.log1p(
+                                Math.hypot(real[y][x], imag[y][x])
+                            );
+                            mags[y * B + x] = m;
+                            if (m > max) max = m;
+                        }
+                    for (let y = 0; y < B; y++)
+                        for (let x = 0; x < B; x++) {
+                            const sx = (x + B / 2) % B;
+                            const sy = (y + B / 2) % B;
+                            const v = Math.floor((mags[y * B + x] / max) * 255);
+                            const idx = 4 * (sy * B + sx);
+                            image.data[idx] =
+                                image.data[idx + 1] =
+                                image.data[idx + 2] =
+                                    v;
+                            image.data[idx + 3] = 255;
+                        }
+                    tctx.putImageData(image, 0, 0);
+                    context.clearRect(0, 0, SIZE, SIZE);
+                    context.drawImage(tmp, 0, 0, SIZE, SIZE);
+                }
+
+                function highlight() {
+                    render(origFreq, ctx.inv);
+                    if (!selectedBins.length) return;
+                    const cell = SIZE / BIN;
+                    ctx.inv.save();
+                    ctx.inv.strokeStyle = getComputedStyle(
+                        document.documentElement
+                    )
+                        .getPropertyValue("--highlight-color")
+                        .trim();
+                    ctx.inv.lineWidth = 2;
+                    selectedBins.forEach(({ fx, fy }) => {
+                        const dx = ((fx + BIN / 2) % BIN) * cell;
+                        const dy = ((fy + BIN / 2) % BIN) * cell;
+                        ctx.inv.strokeRect(dx, dy, cell, cell);
+                    });
+                    ctx.inv.restore();
+                }
+
+                function toFreq(px, py) {
+                    const cell = SIZE / BIN;
+                    const gx = Math.floor(px / cell),
+                        gy = Math.floor(py / cell);
+                    return {
+                        fx: (gx - BIN / 2 + BIN) % BIN,
+                        fy: (gy - BIN / 2 + BIN) % BIN,
+                    };
+                }
+
+                function fillWhite(c) {
+                    c.fillStyle = "#fff";
+                    c.fillRect(0, 0, SIZE, SIZE);
+                }
+
+                function fft1D(re, im) {
+                    /* same */
+                    const n = re.length,
+                        lvl = Math.log2(n) | 0;
+                    for (let i = 0, j; i < n; i++) {
+                        j = bitRev(i, lvl);
+                        if (j > i)
+                            ([re[i], re[j]] = [re[j], re[i]]),
+                                ([im[i], im[j]] = [im[j], im[i]]);
+                    }
+                    for (let size = 2; size <= n; size <<= 1) {
+                        const half = size / 2,
+                            step = n / size;
+                        for (let i = 0; i < n; i += size)
+                            for (let j = 0; j < half; j++) {
+                                const k = j * step,
+                                    ang = (-2 * Math.PI * k) / n;
+                                const cos = Math.cos(ang),
+                                    sin = Math.sin(ang),
+                                    a = i + j,
+                                    b = a + half;
+                                const tr = re[b] * cos - im[b] * sin,
+                                    ti = re[b] * sin + im[b] * cos;
+                                re[b] = re[a] - tr;
+                                im[b] = im[a] - ti;
+                                re[a] += tr;
+                                im[a] += ti;
+                            }
+                    }
+                }
+                function bitRev(v, l) {
+                    let r = 0;
+                    for (let i = 0; i < l; i++) {
+                        r = (r << 1) | (v & 1);
+                        v >>= 1;
+                    }
+                    return r;
+                }
+
+                function fft2D(img, B) {
+                    const blk = SIZE / B;
+                    const re = Array.from(
+                        { length: B },
+                        () => new Float64Array(B)
+                    );
+                    const im = Array.from(
+                        { length: B },
+                        () => new Float64Array(B)
+                    );
+                    for (let by = 0; by < B; by++)
+                        for (let bx = 0; bx < B; bx++) {
+                            let s = 0;
+                            for (let y = 0; y < blk; y++)
+                                for (let x = 0; x < blk; x++)
+                                    s +=
+                                        img.data[
+                                            ((by * blk + y) * SIZE +
+                                                (bx * blk + x)) *
+                                                4
+                                        ] / 255;
+                            re[by][bx] = s / (blk * blk);
+                        }
+                    for (let y = 0; y < B; y++) fft1D(re[y], im[y]);
+                    for (let x = 0; x < B; x++) {
+                        const cRe = new Float64Array(B),
+                            cIm = new Float64Array(B);
+                        for (let y = 0; y < B; y++) {
+                            cRe[y] = re[y][x];
+                            cIm[y] = im[y][x];
+                        }
+                        fft1D(cRe, cIm);
+                        for (let y = 0; y < B; y++) {
+                            re[y][x] = cRe[y];
+                            im[y][x] = cIm[y];
+                        }
+                    }
+                    return { real: re, imag: im, B };
+                }
+
+                function ifft2D({ real, imag, B }) {
+                    const re = real.map((r) => Float64Array.from(r));
+                    const im = imag.map((r) => Float64Array.from(r));
+                    for (let x = 0; x < B; x++) {
+                        const cRe = new Float64Array(B),
+                            cIm = new Float64Array(B);
+                        for (let y = 0; y < B; y++) {
+                            cRe[y] = re[y][x];
+                            cIm[y] = -im[y][x];
+                        }
+                        fft1D(cRe, cIm);
+                        for (let y = 0; y < B; y++) {
+                            re[y][x] = cRe[y] / B;
+                            im[y][x] = -cIm[y] / B;
+                        }
+                    }
+                    for (let y = 0; y < B; y++) {
+                        for (let k = 0; k < B; k++) im[y][k] = -im[y][k];
+                        fft1D(re[y], im[y]);
+                        for (let k = 0; k < B; k++) re[y][k] /= B;
+                    }
+                    const out = new ImageData(B, B);
+                    for (let y = 0; y < B; y++)
+                        for (let x = 0; x < B; x++) {
+                            let v = Math.round(re[y][x] * 255);
+                            v = Math.max(0, Math.min(255, v));
+                            const i = (y * B + x) * 4;
+                            out.data[i] = out.data[i + 1] = out.data[i + 2] = v;
+                            out.data[i + 3] = 255;
+                        }
+                    return out;
+                }
+            })();
+        </script>
+    </body>
+</html>
